@@ -1,0 +1,524 @@
+{
+  "name": "Topic 12 - Communication, Alerts & Workflow Notifications",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "e9a10001-0001-4000-8000-000000000001",
+      "name": "Manual_Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      incidentId: \"INC-901\",\n      service: \"payment-gateway\",\n      errorSignature: \"AUTH_TIMEOUT_504\",\n      message: \"Upstream bank gateway response latency exceeded 8000ms\",\n      impactedUsers: 240,\n      env: \"production\"\n    }\n  },\n  {\n    json: {\n      incidentId: \"INC-902\",\n      service: \"payment-gateway\",\n      errorSignature: \"AUTH_TIMEOUT_504\",\n      message: \"Upstream bank gateway response latency exceeded 8200ms\",\n      impactedUsers: 310,\n      env: \"production\"\n    }\n  },\n  {\n    json: {\n      incidentId: \"INC-903\",\n      service: \"search-indexer\",\n      errorSignature: \"HEAP_MEMORY_WARN_85\",\n      message: \"Elasticsearch node heap utilization exceeded 85%\",\n      impactedUsers: 0,\n      env: \"staging\"\n    }\n  }\n];"
+      },
+      "id": "e9a10001-0002-4000-8000-000000000002",
+      "name": "Code_SimulateIncidents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.alertCache = staticData.alertCache || {};\nconst item = $input.item.json;\nconst now = Date.now();\nconst throttleWindowMs = 15 * 60 * 1000; // 15-minute suppression window\n\n// 1. Severity Classification\nlet severity = \"P3_MINOR\";\nif (item.impactedUsers > 100 && item.env === \"production\") {\n  severity = \"P1_CRITICAL\";\n} else if (item.env === \"production\" || item.impactedUsers > 0) {\n  severity = \"P2_MAJOR\";\n}\n\n// 2. Throttling Key by service and errorSignature\nconst throttleKey = `${item.service}:${item.errorSignature}`;\nconst lastAlertTime = staticData.alertCache[throttleKey] || 0;\nconst isThrottled = (now - lastAlertTime) < throttleWindowMs;\n\nif (!isThrottled) {\n  staticData.alertCache[throttleKey] = now; // Update timestamp\n}\n\nreturn {\n  json: {\n    ...item,\n    severity: severity,\n    isThrottled: isThrottled,\n    shouldAlert: !isThrottled,\n    throttleKey: throttleKey,\n    evaluatedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "e9a10001-0003-4000-8000-000000000003",
+      "name": "Code_EvaluateSeverityAndThrottle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.shouldAlert }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "e9a10001-0004-4000-8000-000000000004",
+      "name": "IF_IsThrottled",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        900,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  json: {\n    event: \"ALERT_SUPPRESSED_BY_THROTTLE_POLICY\",\n    incidentId: $json.incidentId,\n    throttleKey: $json.throttleKey,\n    reason: \"THROTTLED_COOLDOWN_ACTIVE\",\n    suppressedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "e9a10001-0005-4000-8000-000000000005",
+      "name": "Log_SuppressedAlert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "P1_CRITICAL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "P2_MAJOR",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "P3_MINOR",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        }
+      },
+      "id": "e9a10001-0006-4000-8000-000000000006",
+      "name": "Switch_RouteBySeverity",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1140,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst blockKitPayload = {\n  channel: \"#critical-incidents\",\n  text: `🚨 P1 CRITICAL INCIDENT: ${item.service}`,\n  blocks: [\n    {\n      type: \"header\",\n      text: { type: \"plain_text\", text: `🚨 P1 CRITICAL: ${item.service.toUpperCase()}`, emoji: true }\n    },\n    {\n      type: \"section\",\n      fields: [\n        { type: \"mrkdwn\", text: `*Incident ID:*\\n\\`${item.incidentId}\\`` },\n        { type: \"mrkdwn\", text: `*Environment:*\\n\\`${item.env.toUpperCase()}\\`` },\n        { type: \"mrkdwn\", text: `*Impacted Users:*\\n*${item.impactedUsers}*` },\n        { type: \"mrkdwn\", text: `*Signature:*\\n\\`${item.errorSignature}\\`` }\n      ]\n    },\n    {\n      type: \"section\",\n      text: { type: \"mrkdwn\", text: `*Diagnostic Message:*\\n>${item.message}` }\n    }\n  ]\n};\nreturn { json: { incidentId: item.incidentId, severity: item.severity, channel: \"#critical-incidents\", dispatchPayload: blockKitPayload } };"
+      },
+      "id": "e9a10001-0007-4000-8000-000000000007",
+      "name": "Code_BuildP1BlockKit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst payload = {\n  channel: \"#dev-alerts\",\n  text: `⚠️ P2 MAJOR ALERT: [${item.service}] ${item.message}`,\n  attachments: [\n    {\n      color: \"#f59e0b\",\n      fields: [\n        { title: \"Incident ID\", value: item.incidentId, short: true },\n        { title: \"Environment\", value: item.env, short: true },\n        { title: \"Error Signature\", value: item.errorSignature, short: false }\n      ]\n    }\n  ]\n};\nreturn { json: { incidentId: item.incidentId, severity: item.severity, channel: \"#dev-alerts\", dispatchPayload: payload } };"
+      },
+      "id": "e9a10001-0008-4000-8000-000000000008",
+      "name": "Code_BuildP2SlackCard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nreturn {\n  json: {\n    digestStatus: \"QUEUED_FOR_DIGEST\",\n    incidentId: item.incidentId,\n    severity: item.severity,\n    channel: \"digest_queue\",\n    message: item.message,\n    queuedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "e9a10001-0009-4000-8000-000000000009",
+      "name": "Code_StageInDigestQueue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://dummyjson.com/c/mock-slack-notifications",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.dispatchPayload }}",
+        "options": {}
+      },
+      "id": "e9a10001-0010-4000-8000-000000000010",
+      "name": "HTTP_PostToMockSlack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1660,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.item.json;\nreturn {\n  json: {\n    event: \"NOTIFICATION_DISPATCHED\",\n    channel: resp.channel || \"#critical-incidents\",\n    deliveryStatus: resp.ok || resp.digestStatus ? \"DELIVERED\" : \"QUEUED\",\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "e9a10001-0011-4000-8000-000000000011",
+      "name": "Code_AuditNotificationDelivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        240
+      ]
+    }
+  ],
+  "pinData": {
+    "Code_SimulateIncidents": [
+      {
+        "json": {
+          "incidentId": "INC-901",
+          "service": "payment-gateway",
+          "errorSignature": "AUTH_TIMEOUT_504",
+          "message": "Upstream bank gateway response latency exceeded 8000ms",
+          "impactedUsers": 240,
+          "env": "production"
+        }
+      },
+      {
+        "json": {
+          "incidentId": "INC-902",
+          "service": "payment-gateway",
+          "errorSignature": "AUTH_TIMEOUT_504",
+          "message": "Upstream bank gateway response latency exceeded 8200ms",
+          "impactedUsers": 310,
+          "env": "production"
+        }
+      },
+      {
+        "json": {
+          "incidentId": "INC-903",
+          "service": "search-indexer",
+          "errorSignature": "HEAP_MEMORY_WARN_85",
+          "message": "Elasticsearch node heap utilization exceeded 85%",
+          "impactedUsers": 0,
+          "env": "staging"
+        }
+      }
+    ],
+    "Code_EvaluateSeverityAndThrottle": [
+      {
+        "json": {
+          "incidentId": "INC-901",
+          "service": "payment-gateway",
+          "errorSignature": "AUTH_TIMEOUT_504",
+          "message": "Upstream bank gateway response latency exceeded 8000ms",
+          "impactedUsers": 240,
+          "env": "production",
+          "severity": "P1_CRITICAL",
+          "isThrottled": false,
+          "shouldAlert": true,
+          "throttleKey": "payment-gateway:AUTH_TIMEOUT_504",
+          "evaluatedAt": "2026-11-05T13:30:00.000Z"
+        }
+      },
+      {
+        "json": {
+          "incidentId": "INC-902",
+          "service": "payment-gateway",
+          "errorSignature": "AUTH_TIMEOUT_504",
+          "message": "Upstream bank gateway response latency exceeded 8200ms",
+          "impactedUsers": 310,
+          "env": "production",
+          "severity": "P1_CRITICAL",
+          "isThrottled": true,
+          "shouldAlert": false,
+          "throttleKey": "payment-gateway:AUTH_TIMEOUT_504",
+          "evaluatedAt": "2026-11-05T13:30:00.000Z"
+        }
+      },
+      {
+        "json": {
+          "incidentId": "INC-903",
+          "service": "search-indexer",
+          "errorSignature": "HEAP_MEMORY_WARN_85",
+          "message": "Elasticsearch node heap utilization exceeded 85%",
+          "impactedUsers": 0,
+          "env": "staging",
+          "severity": "P3_MINOR",
+          "isThrottled": false,
+          "shouldAlert": true,
+          "throttleKey": "search-indexer:HEAP_MEMORY_WARN_85",
+          "evaluatedAt": "2026-11-05T13:30:00.000Z"
+        }
+      }
+    ],
+    "Log_SuppressedAlert": [
+      {
+        "json": {
+          "event": "ALERT_SUPPRESSED_BY_THROTTLE_POLICY",
+          "incidentId": "INC-902",
+          "throttleKey": "payment-gateway:AUTH_TIMEOUT_504",
+          "reason": "THROTTLED_COOLDOWN_ACTIVE",
+          "suppressedAt": "2026-11-05T13:30:01.000Z"
+        }
+      }
+    ],
+    "Code_BuildP1BlockKit": [
+      {
+        "json": {
+          "incidentId": "INC-901",
+          "severity": "P1_CRITICAL",
+          "channel": "#critical-incidents",
+          "dispatchPayload": {
+            "channel": "#critical-incidents",
+            "text": "🚨 P1 CRITICAL INCIDENT: payment-gateway",
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "🚨 P1 CRITICAL: PAYMENT-GATEWAY",
+                  "emoji": true
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Incident ID:*\n`INC-901`"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Environment:*\n`PRODUCTION`"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Impacted Users:*\n*240*"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Signature:*\n`AUTH_TIMEOUT_504`"
+                  }
+                ]
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*Diagnostic Message:*\n>Upstream bank gateway response latency exceeded 8000ms"
+                }
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "Code_AuditNotificationDelivery": [
+      {
+        "json": {
+          "event": "NOTIFICATION_DISPATCHED",
+          "channel": "#critical-incidents",
+          "deliveryStatus": "DELIVERED",
+          "timestamp": "2026-11-05T13:30:02.000Z"
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Manual_Trigger": {
+      "main": [
+        [
+          {
+            "node": "Code_SimulateIncidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_SimulateIncidents": {
+      "main": [
+        [
+          {
+            "node": "Code_EvaluateSeverityAndThrottle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_EvaluateSeverityAndThrottle": {
+      "main": [
+        [
+          {
+            "node": "IF_IsThrottled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_IsThrottled": {
+      "main": [
+        [
+          {
+            "node": "Switch_RouteBySeverity",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log_SuppressedAlert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch_RouteBySeverity": {
+      "main": [
+        [
+          {
+            "node": "Code_BuildP1BlockKit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code_BuildP2SlackCard",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code_StageInDigestQueue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_BuildP1BlockKit": {
+      "main": [
+        [
+          {
+            "node": "HTTP_PostToMockSlack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_BuildP2SlackCard": {
+      "main": [
+        [
+          {
+            "node": "HTTP_PostToMockSlack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP_PostToMockSlack": {
+      "main": [
+        [
+          {
+            "node": "Code_AuditNotificationDelivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_StageInDigestQueue": {
+      "main": [
+        [
+          {
+            "node": "Code_AuditNotificationDelivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f9d0e1f2-1212-4c1e-9912-alertthrottlingblockkit",
+  "meta": {
+    "instanceId": "tayana-enterprise-n8n-level-2-topic-12"
+  },
+  "id": "Topic_12_Communication_Alerts_Notifications",
+  "tags": [
+    {
+      "name": "Level-2-Intermediate",
+      "id": "lvl2"
+    },
+    {
+      "name": "Incident-Management",
+      "id": "incident-mgmt"
+    },
+    {
+      "name": "Slack-Block-Kit",
+      "id": "slack-block-kit"
+    },
+    {
+      "name": "Alert-Throttling",
+      "id": "alert-throttling"
+    }
+  ]
+}
